@@ -9,6 +9,7 @@ from PTMCMCSampler.PTMCMCSampler import PTSampler as ptmcmc
 from enterprise.signals import anis_coefficients as ac
 
 import sympy
+import quadprog
 
 try:
     from scipy.integrate import trapz
@@ -630,6 +631,27 @@ class anis_pta():
         radio_map_err = np.sqrt(np.diag(fisher_diag_inv)) * norm
     
         return radio_map_n, radio_map_err
+    
+
+    def qp_solver(self, F, X, A, b):
+        x, f, _, _, _, _ = quadprog.solve_qp(F, X, A, b)
+        return x
+
+
+    def pix_map(self, pair_cov = False):
+
+        # Compute the A matrix and b vector for the cons on the power Ax >= b
+        A = np.diag(np.ones(self.F.shape[1]))
+        b = np.zeros(self.F.shape[1])
+
+        if pair_cov:
+            fish = self.F.T @ self.pair_cov_N_inv @ self.F
+            rec_map = self.qp_solver(fish, self.F.T @ self.pair_cov_N_inv @ self.rho, A, b)
+        else:
+            fish = self.F.T @ self.pair_ind_N_inv @ self.F
+            rec_map = self.qp_solver(fish, self.F.T @ self.pair_ind_N_inv @ self.rho, A, b)
+
+        return rec_map
 
 
     def max_lkl_clm(self, cutoff = None, use_svd_reg = False, reg_type = 'l2', alpha = 0,
