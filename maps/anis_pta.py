@@ -6,7 +6,8 @@ import pickle, healpy as hp
 import numpy.random as nr, scipy.stats as scst
 from PTMCMCSampler.PTMCMCSampler import PTSampler as ptmcmc
 
-from enterprise.signals import anis_coefficients as ac
+# use a modified version of anis_coefficients to avoid having to use invert_omega
+import anis_coefficients as ac
 
 import sympy
 import quadprog
@@ -310,6 +311,7 @@ class anis_pta():
         NOTE: This function uses the GW propogation direction for gwtheta and gwphi
         rather than the source direction (i.e. this method uses the vector from the
         source to the observer)
+        NOTE: This modfied version uses source direction instead!
         
         Args:
             psrtheta (np.ndarray): An array of pulsar theta positions.
@@ -338,8 +340,8 @@ class anis_pta():
         phat = np.array([np.sin(ptheta)*np.cos(pphi), np.sin(ptheta)*np.sin(pphi),\
                 np.cos(ptheta)])
 
-        fplus = 0.5 * (np.dot(m, phat)**2 - np.dot(n, phat)**2) / (1 - np.dot(omhat, phat))
-        fcross = (np.dot(m, phat)*np.dot(n, phat)) / (1 - np.dot(omhat, phat))
+        fplus = 0.5 * (np.dot(m, phat)**2 - np.dot(n, phat)**2) / (1 + np.dot(omhat, phat))
+        fcross = (np.dot(m, phat)*np.dot(n, phat)) / (1 + np.dot(omhat, phat))
 
         return fplus, fcross
     
@@ -353,6 +355,7 @@ class anis_pta():
         NOTE: This function uses the GW propogation direction for gwtheta and gwphi
         rather than the source direction (i.e. this method uses the vector from the
         source to the observer)
+        NOTE: This modfied version uses source direction instead!
 
         Returns:
             np.ndarray: An array of shape (npairs, npix) containing the antenna
@@ -582,7 +585,7 @@ class anis_pta():
         return power, pow_err, cn, sv
     
 
-    def get_radiometer_map(self, pair_cov = True):
+    def get_radiometer_map(self, pair_cov = True, norm = True):
         """A method to get the radiometer pixel map.
 
         This method calculates the radiometer pixel map for all pixels. This method
@@ -591,6 +594,7 @@ class anis_pta():
         rather than the source direction (i.e. this method uses the vector from the
         source to the observer). Use utils.invert_omega() to get the source direction
         instead!
+        NOTE: In this version this is fixed due to import of modified anis_coefficients.py
 
         Args:
             pair_cov (bool): A flag to use the pair covariance matrix if it was supplied.
@@ -627,11 +631,19 @@ class anis_pta():
         pix_area = hp.nside2pixarea(nside = self.nside)
         norm = 4 * np.pi / trapz(radio_map, dx = pix_area)
 
-        radio_map_n = radio_map * norm
-        radio_map_err = np.sqrt(np.diag(fisher_diag_inv)) * norm
-    
-        return radio_map_n, radio_map_err
-    
+        if norm:
+
+            radio_map_n = radio_map * norm
+            radio_map_err = np.sqrt(np.diag(fisher_diag_inv)) * norm
+        
+            return radio_map_n, radio_map_err
+        
+        else: 
+
+            radio_map_err = np.sqrt(np.diag(fisher_diag_inv))
+
+            return radio_map, radio_map_err
+        
 
     def qp_solver(self, F, X, A, b):
         x, f, _, _, _, _ = quadprog.solve_qp(F, X, A, b)
