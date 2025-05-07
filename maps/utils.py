@@ -17,6 +17,7 @@ from . import anis_pta as ap
 from scipy.interpolate import interp1d
 from astroML.linear_model import LinearRegression
 
+import quadprog 
 
 def invert_omega(hp_map):
     """A function to change between GW propogation direction and GW source direction.
@@ -82,7 +83,7 @@ def convert_blm_params_to_clm(pta_anis, blm_params):
     return clms_rvylm
 
 
-def signal_to_noise(pta, lm_params = None, pair_cov = False, method = 'leastsq'):
+def signal_to_noise(pta, iso_pta, vals, pair_cov = False, method = 'leastsq'):
     """A function to compute the SNR of the square-root spherical harmonic anisotropy.
 
     This function computes the signal-to-noise ratio of anisotropy in the square-root 
@@ -108,41 +109,29 @@ def signal_to_noise(pta, lm_params = None, pair_cov = False, method = 'leastsq')
             anis_sn (float): The squared anisotropic signal-to-noise ratio
     """
 
-    if lm_params is None:
-        lm_out = pta.max_lkl_sqrt_power(pair_cov=pair_cov,method=method)
-    else:
-        lm_out = lm_params
+    iso_pta.set_data(pta.rho, pta.sig, pta.os, pta.pair_cov)
 
-    iso_pta = ap.anis_pta(pta.psrs_theta, pta.psrs_phi, pta.xi, pta.rho, pta.sig, 
-                 os = 1, pair_cov = pta.pair_cov, l_max = 0, nside = pta.nside, 
-                 mode = pta.mode, use_physical_prior = pta.use_physical_prior, 
-                 include_pta_monopole = pta.include_pta_monopole, 
-                 pair_idx = pta.pair_idx) #OS already applied in pta
-
-    lm_out_iso = iso_pta.max_lkl_sqrt_power(pair_cov=pair_cov,method=method)
-
-    mini = np.array(list(lm_out.params.valuesdict().values()))
-    iso_mini = np.array(list(lm_out_iso.params.valuesdict().values()))
+    iso_mini = iso_pta.max_lkl_sqrt_power(pair_cov=pair_cov,method=method)
 
     # Convert blm to clm
     if pta.include_pta_monopole:
-        A_mono = 10**mini[0]
-        A2 = 10**mini[1]
-        iso_A_mono = 10**iso_mini[0]
-        iso_A2 = 10**iso_mini[1]
+        A_mono = vals[0]
+        A2 = vals[1]
+        clm = vals[2]
 
-        clm = convert_blm_params_to_clm(pta, mini[2:])
-        iso_clm = convert_blm_params_to_clm(iso_pta, iso_mini[2:])
-
+        iso_A_mono = iso_mini[0]
+        iso_A2 = iso_mini[1]
+        iso_clm = iso_mini[2]
+        
     else:
         A_mono = 0
-        A2 = 10**mini[0]
+        A2 = vals[0]
+        clm = vals[1]
+        
         iso_A_mono = 0
-        iso_A2 = 10**iso_mini[0]
-
-        clm = convert_blm_params_to_clm(pta, mini[1:])
-        iso_clm = convert_blm_params_to_clm(iso_pta, iso_mini[1:])
-
+        iso_A2 = iso_mini[0]
+        iso_clm = iso_mini[1]
+        
     ani_orf = A_mono + A2*pta.orf_from_clm(clm, include_scale=False)
     iso_orf = iso_A_mono + iso_A2*iso_pta.orf_from_clm(iso_clm, include_scale=False) 
 
@@ -161,13 +150,38 @@ def signal_to_noise(pta, lm_params = None, pair_cov = False, method = 'leastsq')
 
     snm = (-1/2)*((ani_res).T @ covinv @ (ani_res)) # Anisotropy chi-square
     hdnm = (-1/2)*((iso_res).T @ covinv @ (iso_res)) # Isotropy chi-square
-    nm = (-1/2)*((pta.rho).T @ noiseinv @ (pta.rho)) # Null chi-square (Not pair covariant)
 
-    total_sn = 2 * (snm - nm)
-    iso_sn = 2 * (hdnm - nm)
     anis_sn = 2 * (snm - hdnm)
 
-    return total_sn, iso_sn, anis_sn
+    return anis_sn
+
+def qp_solver(F, X, A, b):
+    x, f, _, _, _, _ = quadprog.solve_qp(F, X, A, b)
+    return x
+
+
+
+def signal_to_noise_pix(pta, sky_map, pair_cov = False):
+    """A function to compute the SNR of the numerical pixel anisotropy.
+    """
+    if pair_cov:
+        inv_sig = pta.pair_cov_N_inv
+    else:
+        inv_sig = pta.pair_ind_N_inv
+
+    antenna = np.sum(pta.F_mat_pix, axis = 1).reshape(-1, 1)
+    F_mono = antenna.T @ inv_sig @ antenna
+    A_mono = np.array([[1]], dtype=np.float64)
+    b_mono = np.array([0], dtype=np.float64)
+
+
+    mono_power = qp_solver(F_mono, antenna.T @ inv_sig @ pta.rho, A_mono, b_mono)
+
+    snm = (-1/2) * (pta.rho - pta.F_mat_pix @ sky_map).T @ inv_sig @ (pta.rho - pta.F_mat_pix @ sky_map)
+    hdnm = (-1/2) * (pta.rho - antenna @ mono_power).T @ inv_sig @ (pta.rho - antenna @ mono_power)
+    anis_sn = 2 * (snm - hdnm)
+
+    return anis_sn
 
 
 def angular_power_spectrum(clm):
@@ -319,3 +333,12 @@ def woodbury_inverse(A, U, C, V, ret_cond = False):
         return tot_inv, np.linalg.cond(CVAU)
     
     return tot_inv
+
+
+
+
+
+
+
+
+

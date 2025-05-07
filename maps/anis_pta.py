@@ -70,7 +70,7 @@ class anis_pta():
     """
 
     def __init__(self, psrs_theta, psrs_phi, xi = None, rho = None, sig = None, 
-                 os = None, pair_cov = None, l_max = 6, nside = 2, mode = 'power_basis', 
+                 os = None, pair_cov = None, l_max = 6, nside_rad = 8, nside_pix = 4, nside_clm = 16, mode = 'power_basis', 
                  use_physical_prior = False, include_pta_monopole = False, 
                  pair_idx = None):
         """Constructor for the anis_pta class.
@@ -135,8 +135,13 @@ class anis_pta():
         
         # Pixel decomposition and Spherical harmonic parameters
         self.l_max = int(l_max)
-        self.nside = int(nside)
-        self.npix = hp.nside2npix(self.nside)
+        self.nside_rad = int(nside_rad)
+        self.nside_clm = int(nside_clm)
+        self.nside_pix = int(nside_pix)
+
+        self.npix_pix = hp.nside2npix(self.nside_pix)
+        self.npix_rad = hp.nside2npix(self.nside_rad)
+        self.npix_clm = hp.nside2npix(self.nside_clm)
 
         # Some configuration for spherical harmonic basis runs
         # clm refers to normal spherical harmonic basis
@@ -144,8 +149,6 @@ class anis_pta():
         self.blmax = int(self.l_max / 2.)
         self.clm_size = (self.l_max + 1) ** 2
         self.blm_size = hp.Alm.getsize(self.blmax)
-
-        self.gw_theta, self.gw_phi = hp.pix2ang(nside=self.nside, ipix=np.arange(self.npix))
        
         self.use_physical_prior = bool(use_physical_prior)
         self.include_pta_monopole = bool(include_pta_monopole)
@@ -165,13 +168,15 @@ class anis_pta():
             #self.ndim = 1 + (2 * (hp.Alm.getsize(int(self.blmax)) - self.blmax))
             self.ndim = 1 + (self.blmax + 1) ** 2
 
-        self.F_mat = self.antenna_response()
+        self.F_mat_rad = self.antenna_response(mode='rad')
+        self.F_mat_pix = self.antenna_response(mode='pix')
+        self.F_mat_clm = self.antenna_response(mode='clm')
 
         if self.mode == 'power_basis' or self.mode == 'sqrt_power_basis':
 
             # The spherical harmonic basis for \Gamma_lm_mat shape (nclm, npsrs, npsrs)
             Gamma_lm_mat = ac.anis_basis(np.dstack((self.psrs_phi, self.psrs_theta))[0], 
-                                         lmax = self.l_max, nside = self.nside)
+                                         lmax = self.l_max, nside = self.nside_clm)
             
             # We need to reorder Gamma_lm_mat to shape (nclm, npairs)
             self.Gamma_lm = np.zeros((Gamma_lm_mat.shape[0], self.npairs))
@@ -346,7 +351,7 @@ class anis_pta():
         return fplus, fcross
     
 
-    def antenna_response(self):
+    def antenna_response(self, mode = 'rad'):
         """A function to compute the antenna response matrix R_{ab,k}.
 
         This function computes the antenna response matrix R_{ab,k} where ab 
@@ -361,13 +366,23 @@ class anis_pta():
             np.ndarray: An array of shape (npairs, npix) containing the antenna
                 pattern response matrix.
         """
-        npix = hp.nside2npix(self.nside)
-        gwtheta,gwphi = hp.pix2ang(self.nside,np.arange(npix))
+
+        if mode not in ['rad', 'pix', 'clm']:
+            raise ValueError("mode must be either 'rad' or 'pix'")
+        if mode=='rad':
+            nside = self.nside_rad
+        elif mode=='clm':
+            nside = self.nside_clm
+        else:
+            nside = self.nside_pix
+
+        npix = hp.nside2npix(nside)
+        gwtheta,gwphi = hp.pix2ang(nside,np.arange(npix))
 
         FpFc = ac.signalResponse_fast(self.psrs_theta, self.psrs_phi, gwtheta, gwphi)
         Fp,Fc = FpFc[:,0::2], FpFc[:,1::2] 
 
-        R_abk = np.zeros( (self.npairs,self.npix) )
+        R_abk = np.zeros( (self.npairs,npix) )
         # Now lets do some multiplication
         for i,(a,b) in enumerate(self.pair_idx):
             R_abk[i] = Fp[a]*Fp[b] + Fc[a]*Fc[b]
@@ -419,9 +434,9 @@ class anis_pta():
             amp2 = 1
             clm = params
 
-        sh_map = ac.mapFromClm_fast(clm, nside = self.nside)
+        sh_map = ac.mapFromClm_fast(clm, nside = self.nside_clm)
 
-        orf = amp2 * np.dot(self.F_mat, sh_map)
+        orf = amp2 * np.dot(self.F_mat_clm, sh_map)
 
         return np.longdouble(orf)
     
@@ -490,8 +505,7 @@ class anis_pta():
 
         return fisher_mat
 
-
-    def fisher_matrix_pixel(self, pair_cov=False):
+    def fisher_matrix_pix(self, pair_cov=False):
         """A method to calculate the Fisher matrix for the pixel basis.
 
         Args:
@@ -506,11 +520,30 @@ class anis_pta():
         if pair_cov and self.pair_cov is None:
             raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
         elif pair_cov:
-            fisher_mat = self.F_mat.T @ self.pair_cov_N_inv @ self.F_mat
+            fisher_mat = self.F_mat_pix.T @ self.pair_cov_N_inv @ self.F_mat_pix
         else:
-            fisher_mat = self.F_mat.T @ self.pair_ind_N_inv @ self.F_mat
+            fisher_mat = self.F_mat_pix.T @ self.pair_ind_N_inv @ self.F_mat_pix
         return fisher_mat
     
+    def fisher_matrix_rad(self, pair_cov=False):
+        """A method to calculate the Fisher matrix for the pixel basis.
+
+        Args:
+            pair_cov (bool): A flag to use the pair covariance matrix if it was supplied
+
+        Raises:
+            ValueError: If pair_cov is True and no pair covariance matrix is supplied.
+
+        Returns:
+            np.ndarray: The Fisher matrix for the pixel basis. [npix x npix]
+        """
+        if pair_cov and self.pair_cov is None:
+            raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
+        elif pair_cov:
+            fisher_mat = self.F_mat_rad.T @ self.pair_cov_N_inv @ self.F_mat_rad
+        else:
+            fisher_mat = self.F_mat_rad.T @ self.pair_ind_N_inv @ self.F_mat_rad
+        return fisher_mat
 
     def max_lkl_pixel(self, cutoff = 0, return_fac1 = False, use_svd_reg = False, 
                       reg_type = 'l2', alpha = 0, pair_cov = False):
@@ -547,9 +580,9 @@ class anis_pta():
         if pair_cov and self.pair_cov is None:
             raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
         elif pair_cov:
-            FNF = self.F_mat.T @ self.pair_cov_N_inv @ self.F_mat
+            FNF = self.F_mat_pix.T @ self.pair_cov_N_inv @ self.F_mat_pix
         else:
-            FNF = self.F_mat.T @ self.pair_ind_N_inv @ self.F_mat
+            FNF = self.F_mat_pix.T @ self.pair_ind_N_inv @ self.F_mat_pix
         
         sv = sl.svd(FNF, compute_uv = False,)
 
@@ -560,24 +593,24 @@ class anis_pta():
             fac1 = sl.pinvh( FNF, atol=abs_cutoff )
             
             if pair_cov:
-                fac2 = self.F_mat.T @ self.pair_cov_N_inv @ self.rho
+                fac2 = self.F_mat_pix.T @ self.pair_cov_N_inv @ self.rho
             else:
-                fac2 = self.F_mat.T @ self.pair_ind_N_inv @ self.rho
+                fac2 = self.F_mat_pix.T @ self.pair_ind_N_inv @ self.rho
 
             pow_err = np.sqrt(np.diag(fac1))
             power = fac1 @ fac2
 
         else:
-            diag_identity = np.diag(np.full(self.F_mat.shape[1], 1))
+            diag_identity = np.diag(np.full(self.F_mat_pix.shape[1], 1))
             fac1r = sl.pinvh(FNF + alpha * diag_identity)
             pow_err = np.sqrt(np.diag(fac1r))
             clf = LinearRegression(regularization = reg_type, fit_intercept = False, 
                                    kwds = dict(alpha = alpha))
             
             if self.pair_cov is not None:
-                clf.fit(self.F_mat, self.rho, self.pair_cov)
+                clf.fit(self.F_mat_pix, self.rho, self.pair_cov)
             else:
-                clf.fit(self.F_mat, self.rho, self.sig)
+                clf.fit(self.F_mat_pix, self.rho, self.sig)
             power = clf.coef_
 
         if return_fac1:
@@ -610,9 +643,9 @@ class anis_pta():
         if pair_cov and self.pair_cov is None:
             raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
         elif pair_cov:
-            dirty_map = self.F_mat.T @ self.pair_cov_N_inv @ self.rho
+            dirty_map = self.F_mat_rad.T @ self.pair_cov_N_inv @ self.rho
         else:
-            dirty_map = self.F_mat.T @ self.pair_ind_N_inv @ self.rho
+            dirty_map = self.F_mat_rad.T @ self.pair_ind_N_inv @ self.rho
     
         # Calculate radiometer map, (i.e. no covariance between pixels)
         # If you take only the diagonal elements of the fisher matrix, 
@@ -620,7 +653,7 @@ class anis_pta():
         # the power in each pixel assuming no power in others, i.e. radiometer!
 
         # Get the full fisher matrix
-        fisher_mat = self.fisher_matrix_pixel()
+        fisher_mat = self.fisher_matrix_rad(pair_cov = pair_cov)
         # Get only the diagonal elements and invert
         fisher_diag_inv = np.diag( 1/np.diag(fisher_mat) )
     
@@ -628,7 +661,7 @@ class anis_pta():
         radio_map = fisher_diag_inv @ dirty_map
 
         # The error needs to be normalized by the area of the pixel
-        pix_area = hp.nside2pixarea(nside = self.nside)
+        pix_area = hp.nside2pixarea(nside = self.nside_rad)
         norm = 4 * np.pi / trapz(radio_map, dx = pix_area)
 
         if norm:
@@ -650,18 +683,18 @@ class anis_pta():
         return x
 
 
-    def pix_map(self, pair_cov = False):
+    def get_pixel_map(self, pair_cov = False):
 
         # Compute the A matrix and b vector for the cons on the power Ax >= b
-        A = np.diag(np.ones(self.F.shape[1]))
-        b = np.zeros(self.F.shape[1])
+        A = np.diag(np.ones(self.F_mat_pix.shape[1]))
+        b = np.zeros(self.F_mat_pix.shape[1])
+
+        fisher_mat = self.fisher_matrix_pix(pair_cov = pair_cov)
 
         if pair_cov:
-            fish = self.F.T @ self.pair_cov_N_inv @ self.F
-            rec_map = self.qp_solver(fish, self.F.T @ self.pair_cov_N_inv @ self.rho, A, b)
+            rec_map = self.qp_solver(fisher_mat, self.F_mat_pix.T @ self.pair_cov_N_inv @ self.rho, A, b)
         else:
-            fish = self.F.T @ self.pair_ind_N_inv @ self.F
-            rec_map = self.qp_solver(fish, self.F.T @ self.pair_ind_N_inv @ self.rho, A, b)
+            rec_map = self.qp_solver(fisher_mat, self.F_mat_pix.T @ self.pair_ind_N_inv @ self.rho, A, b)
 
         return rec_map
 
@@ -695,7 +728,7 @@ class anis_pta():
         """
         F_mat_clm = self.Gamma_lm.T
 
-        FNF_clm = self.fisher_matrix_sph(pair_cov)
+        FNF_clm = self.fisher_matrix_sph(pair_cov = pair_cov)
 
         sv = sl.svd(FNF_clm, compute_uv=False)
         cn = np.max(sv) / np.min(sv)
@@ -870,7 +903,22 @@ class anis_pta():
         
         mini = lmfit.Minimizer(residuals, params)
         opt_params = mini.minimize(method)
-        return opt_params
+
+        vals = np.array(list(opt_params.params.valuesdict().values()))
+        # Convert blm to clm
+        if self.include_pta_monopole:
+            A_mono = 10**vals[0]
+            A2 = 10**vals[1]
+            clm = utils.convert_blm_params_to_clm(self, vals[2:])
+
+            return A_mono, A2, clm
+            
+        else:
+            A_mono = 0
+            A2 = 10**vals[0]
+            clm = utils.convert_blm_params_to_clm(self, vals[1:])
+
+            return A2, clm
 
 
     def prior(self, params):
@@ -897,7 +945,7 @@ class anis_pta():
             elif self.use_physical_prior:
                 #NOTE: if using physical prior, make sure to set initial sample to isotropy
 
-                sh_map = ac.mapFromClm(clm, nside = self.nside)
+                sh_map = ac.mapFromClm(clm, nside = self.nside_clm)
 
                 if np.any(sh_map < 0):
                     return -np.inf #0
