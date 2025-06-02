@@ -789,7 +789,7 @@ class anis_pta():
             x = ['log10_A2', np.log10(nr.uniform(1e-2, 3)), True, np.log10(1e-2), np.log10(1e2), None, None]
             params.append(x)
         else:
-            x = ['log10_A2', np.log10(nr.uniform(0, 3)), True, np.log10(1e-2), np.log10(1e2), None, None]
+            x = ['log10_A2', np.log10(1), True, np.log10(1e-1), np.log10(1e1), None, None]
             params.append(x)
 
         # Now for non-monopole terms!
@@ -902,7 +902,8 @@ class anis_pta():
         
         
         mini = lmfit.Minimizer(residuals, params)
-        opt_params = mini.minimize(method)
+        opt_params = mini.minimize(method)#, ftol = 1e-12, xtol = 1e-12, gtol = 1e-12)#, max_nfev=10000)
+        #return opt_params
 
         vals = np.array(list(opt_params.params.valuesdict().values()))
         # Convert blm to clm
@@ -919,6 +920,7 @@ class anis_pta():
             clm = utils.convert_blm_params_to_clm(self, vals[1:])
 
             return A2, clm
+        
 
 
     def prior(self, params):
