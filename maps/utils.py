@@ -18,6 +18,8 @@ from scipy.interpolate import interp1d
 from astroML.linear_model import LinearRegression
 
 import quadprog 
+import numba
+
 
 def invert_omega(hp_map):
     """A function to change between GW propogation direction and GW source direction.
@@ -56,7 +58,6 @@ def invert_omega(hp_map):
     
     return inv_map
 
-    
 def convert_blm_params_to_clm(pta_anis, blm_params):
     """A function to convert a set of blm parameters to clm parameters.
 
@@ -83,7 +84,7 @@ def convert_blm_params_to_clm(pta_anis, blm_params):
     return clms_rvylm
 
 
-def signal_to_noise(pta, iso_pta, vals, pair_cov = False, method = 'leastsq'):
+def signal_to_noise(pta, iso_pta, vals, pair_cov = False, method = 'leastsq', Lt = None):
     """A function to compute the SNR of the square-root spherical harmonic anisotropy.
 
     This function computes the signal-to-noise ratio of anisotropy in the square-root 
@@ -109,9 +110,9 @@ def signal_to_noise(pta, iso_pta, vals, pair_cov = False, method = 'leastsq'):
             anis_sn (float): The squared anisotropic signal-to-noise ratio
     """
 
-    iso_pta.set_data(pta.rho, pta.sig, pta.os, pta.pair_cov)
+    iso_pta.set_data(pta.rho, pta.sig, pta.os, pta.pair_cov, pta.pair_cov_N_inv)
 
-    iso_mini = iso_pta.max_lkl_sqrt_power(pair_cov=pair_cov,method=method)
+    iso_mini = iso_pta.max_lkl_sqrt_power(pair_cov=pair_cov,method=method, Lt=Lt)
 
     # Convert blm to clm
     if pta.include_pta_monopole:
@@ -137,20 +138,17 @@ def signal_to_noise(pta, iso_pta, vals, pair_cov = False, method = 'leastsq'):
 
 
     if pair_cov:
-        if pta.pair_cov is None:
+        if pta.pair_cov is None and pta.pair_cov_N_inv is None:
             raise ValueError("Pair covariance matrix is not set.")
         covinv = pta.pair_cov_N_inv
-        noiseinv = pta.pair_ind_N_inv
     else:
         covinv = pta.pair_ind_N_inv
-        noiseinv = pta.pair_ind_N_inv
     
     ani_res = pta.rho - ani_orf
     iso_res = pta.rho - iso_orf
 
     snm = (-1/2)*((ani_res).T @ covinv @ (ani_res)) # Anisotropy chi-square
     hdnm = (-1/2)*((iso_res).T @ covinv @ (iso_res)) # Isotropy chi-square
-
     anis_sn = 2 * (snm - hdnm)
 
     return anis_sn

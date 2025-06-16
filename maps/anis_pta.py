@@ -44,8 +44,8 @@ class anis_pta():
         pair_idx (np.ndarray): An array of pulsar indices for each pair [npair x 2].
         xi (np.ndarray, optional): A list of pulsar pair separations from the OS [npair].
         rho (np.ndarray, optional): A list of pulsar pair correlations [npair].
-            NOTE: rho is normalized by the OS value, making this slightly different from 
-            what the OS uses. (i.e. OS calculates \hat{A}^2 * ORF while this uses ORF).
+        NOTE: rho is normalized by the OS value, making this slightly different from 
+        what the OS uses. (i.e. OS calculates \hat{A}^2 * ORF while this uses ORF).
         sig (np.ndarray, optional): A list of 1-sigma uncertainties on rho [npair].
         os (float, optional): The optimal statistic's best-fit A^2 value.
         pair_cov (np.ndarray, optional): The pair covariance matrix [npair x npair].
@@ -70,7 +70,7 @@ class anis_pta():
     """
 
     def __init__(self, psrs_theta, psrs_phi, xi = None, rho = None, sig = None, 
-                 os = None, pair_cov = None, l_max = 6, nside_rad = 8, nside_pix = 4, nside_clm = 16, mode = 'power_basis', 
+                 os = None, pair_cov = None, pair_cov_inv = None, l_max = 6, nside_rad = 8, nside_pix = 4, nside_clm = 16, mode = 'power_basis', 
                  use_physical_prior = False, include_pta_monopole = False, 
                  pair_idx = None):
         """Constructor for the anis_pta class.
@@ -127,7 +127,7 @@ class anis_pta():
         self.rho, self.sig, self.os, self.pair_cov = None, None, None, None
         self.pair_ind_N_inv, self.pair_cov_N_inv = None, None
 
-        self.set_data(rho, sig, os, pair_cov)
+        self.set_data(rho, sig, os, pair_cov, pair_cov_inv)
         
         # Check if pair_idx is valid
         if len(self.pair_idx) != self.npairs:
@@ -186,7 +186,7 @@ class anis_pta():
         return None
     
     
-    def set_data(self, rho=None, sig=None, os=None, covariance=None):
+    def set_data(self, rho=None, sig=None, os=None, covariance=None, covariance_inv=None):
         """Set the data for the anis_pta object.
 
         This function allows you to set the data for the anis_pta object 
@@ -224,15 +224,16 @@ class anis_pta():
 
         if covariance is not None:
             self.pair_cov = covariance / self.os**2
-
-            # Get the inverse of the pair covariance matrix
+        if covariance_inv is not None:
+            self.pair_cov_N_inv = covariance_inv * self.os**2
+            # option to include the covariance matrix inverse directly to avoid recomputing it
+        elif covariance is not None and covariance_inv is None:
             self.pair_cov_N_inv = self._get_N_inv(pair_cov = True)
+            # only compute if there's no inverse supplied
 
         else:
             self.pair_cov = None
             self.pair_cov_N_inv = None
-
-
     def _get_N_inv(self, pair_cov=False, ret_cond = False):
         """A method to calculate the inverse of the pair covariance matrix N.
 
@@ -496,8 +497,8 @@ class anis_pta():
         """
         F_mat_clm = self.Gamma_lm.T
 
-        if pair_cov and self.pair_cov is None:
-            raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
+        if pair_cov and self.pair_cov is None and self.pair_cov_N_inv is None:
+            raise ValueError("No pair covariance matrix or inverse supplied! Set it with set_data()")
         elif pair_cov:
             fisher_mat = F_mat_clm.T @ self.pair_cov_N_inv @ F_mat_clm
         else:
@@ -517,8 +518,8 @@ class anis_pta():
         Returns:
             np.ndarray: The Fisher matrix for the pixel basis. [npix x npix]
         """
-        if pair_cov and self.pair_cov is None:
-            raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
+        if pair_cov and self.pair_cov is None and self.pair_cov_N_inv is None:
+            raise ValueError("No pair covariance matrix or inverse supplied! Set it with set_data()")
         elif pair_cov:
             fisher_mat = self.F_mat_pix.T @ self.pair_cov_N_inv @ self.F_mat_pix
         else:
@@ -537,8 +538,8 @@ class anis_pta():
         Returns:
             np.ndarray: The Fisher matrix for the pixel basis. [npix x npix]
         """
-        if pair_cov and self.pair_cov is None:
-            raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
+        if pair_cov and self.pair_cov is None and self.pair_cov_N_inv is None:
+            raise ValueError("No pair covariance matrix or inverse supplied! Set it with set_data()")
         elif pair_cov:
             fisher_mat = self.F_mat_rad.T @ self.pair_cov_N_inv @ self.F_mat_rad
         else:
@@ -640,8 +641,8 @@ class anis_pta():
                 pixel power map error.
         """
         # Calculate dirty map
-        if pair_cov and self.pair_cov is None:
-            raise ValueError("No pair covariance matrix supplied! Set it with set_data()")
+        if pair_cov and self.pair_cov is None and self.pair_cov_N_inv is None:
+            raise ValueError("No pair covariance matrix or inverse supplied! Set it with set_data()")
         elif pair_cov:
             dirty_map = self.F_mat_rad.T @ self.pair_cov_N_inv @ self.rho
         else:
@@ -821,7 +822,7 @@ class anis_pta():
         return lmf_params
     
 
-    def max_lkl_sqrt_power(self, params = None, pair_cov = False, method = 'leastsq'):
+    def max_lkl_sqrt_power(self,params = None, pair_cov = False, method = 'leastsq', Lt = None):
         """A method to calculate the maximum likelihood b_lms for the sqrt power basis.
 
         This method uses lmfit to minimize the chi-square to find the maximum likelihood
@@ -846,11 +847,13 @@ class anis_pta():
 
 
         # Define L such that L @ L.T = C^-1
-        if pair_cov: 
+        if pair_cov and Lt is None: 
             # Use the Cholesky decomposition to get L
             if self._Lt_pc is None: # No reason to recompute these if done already
                 self._Lt_pc = sl.cholesky(self.pair_cov_N_inv, lower = True).T
             Lt = self._Lt_pc
+        if pair_cov and Lt is not None:
+            pass
         else: 
             # Without pair covariance, L = L.T = diag(1/sig)
             if self._Lt_nopc is None: # No reason to recompute these if done already
@@ -884,15 +887,15 @@ class anis_pta():
             param_arr = np.array(list(param_dict.values())) # Convert to numpy array
 
             if self.include_pta_monopole:
-                A_mono = 10**param_arr[0]
-                A2 = 10**param_arr[1]
+                A_mono = np.power(10,param_arr[0])
+                A2 = np.power(10,param_arr[1])
                 clm = utils.convert_blm_params_to_clm(self, param_arr[2:])
             else:
                 A_mono = 0
-                A2 = 10**param_arr[0]
+                A2 = np.power(10,param_arr[0])
                 clm = utils.convert_blm_params_to_clm(self, param_arr[1:])
 
-            orf = np.sum(clm[:,None] * self.Gamma_lm, axis = 0)
+            orf = clm@self.Gamma_lm
 
             model_orf = A_mono + A2*orf
             
